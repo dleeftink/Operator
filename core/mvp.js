@@ -1,30 +1,16 @@
 class Operator {
   #data;
+  #context;
 
   constructor(input) {
     // Branch the chain if input argument is a Builder class => instantiate or not?
 
     // Factory function prevents identity checking here...
-    if (/*input === Operator*/ input?.name === Operator.name) {
-      let prev = this;
-      let branch = prev.constructor.name;
-      let allOps = "t.b.d";
-
-      return new {
-        [branch]: class Branch extends prev.constructor {
-          get branch() {
-            return true;
-          }
-          /*get layerOps() {
-            return allOps;
-          }*/
-        },
-      }[branch](prev);
-    }
 
     // Take previous input chain as input to new Builder
     if (input instanceof Operator) {
-      this.data = this.constructor.data;
+      this.data = input.constructor.data;
+      // this.constructor.data = Array.from(this) // => freeze data: how to freeze on first go
 
       // Forward iterator to dynamic subclass (E.g. Filter, Mapper)
     } else if (Object.getPrototypeOf(this) instanceof Operator) {
@@ -33,6 +19,34 @@ class Operator {
       // Initiate new Builder
     } else {
       this.data = this.constructor.data = input; // Object.freeze(input); => don't mind freezing iterables
+    }
+
+    if (/*input === Operator*/ input?.name === Operator.name) {
+      let prev = this;
+      let data = Array.from(prev); // => initiates cache
+
+      let branch = prev.constructor.name;
+      let allOps = [
+        "Inherited",
+        this.walk(prev)
+          .map((d) => d.constructor.name)
+          .reduce((acc, operation) => {
+            return `${operation}(${acc})`;
+          }, "input"),
+      ].join(":");
+
+      let instance = new Operator(data);
+
+      return new {
+        [branch]: class Branch extends instance.constructor {
+          get branch() {
+            return true;
+          }
+          get layerOps() {
+            return allOps;
+          }
+        },
+      }[branch](data);
     }
 
     // Return results if input argument is a native accumulator class
@@ -44,9 +58,6 @@ class Operator {
     } else if (input === Set) {
       return new Set(this);
     }
-    Object.defineProperty(this, "context", {
-      enumerable: true,
-    });
   }
 
   get data() {
@@ -117,6 +128,7 @@ class Operator {
   // Dynamically extends current instance
   static map(op) {
     const prev = this; // Current class in the chain
+    const cache = []; // Private cache => only available in closure
     return {
       Mapper: class extends prev {
         /**[Symbol.iterator]() {
@@ -128,18 +140,30 @@ class Operator {
           }
         }*/
 
+        getCache() {
+          return cache;
+        }
+
         // Strategy 2 => slightly faster
         [Symbol.iterator]() {
+          // Return cache on secondary runs
+          if (cache.length > 0) {
+            return cache[Symbol.iterator]();
+          }
           const iterator = super[Symbol.iterator]();
 
+          let hit;
           return {
             next() {
               while (true) {
                 const { value, done } = iterator.next();
+
                 if (done) {
                   return { value: undefined, done: true };
                 }
-                return { value: op(value), done: false };
+                hit = op(value);
+                cache.push(hit);
+                return { value: hit, done: false };
               }
             },
           };
@@ -152,6 +176,7 @@ class Operator {
   // Dynamically extends current instance
   static filter(op) {
     const prev = this; // Current class in the chain
+    const cache = []; // new Map(); // Private cache => only available in closure
     return {
       Filter: class extends prev {
         // Strategy 1 => More concise
@@ -166,10 +191,19 @@ class Operator {
           }
         }*/
 
+        getCache() {
+          return cache;
+        }
+
         // Strategy 2 => slightly faster
         [Symbol.iterator]() {
+          // Return cache on secondary runs
+          if (cache.length > 0) {
+            return cache[Symbol.iterator]();
+          }
           const iterator = super[Symbol.iterator]();
 
+          let hit;
           return {
             next() {
               while (true) {
@@ -177,7 +211,9 @@ class Operator {
                 if (done) {
                   return { value: undefined, done: true };
                 }
-                if (op(value)) {
+
+                if ((hit = op(value))) {
+                  cache.push(value);
                   return { value, done: false };
                 }
               }
@@ -191,6 +227,19 @@ class Operator {
   static factory() {
     return new Function(`return ${this.toString()}`)();
   }
+
+  walk(from) {
+    // walking the prototype chain
+
+    let chain = from ?? this;
+    let ops = [];
+    while (chain !== null && Object.getPrototypeOf(chain) instanceof Operator) {
+      chain = Object.getPrototypeOf(chain); // Safely move up the prototype chain
+      ops.push(chain);
+    }
+    ops = ops.reverse();
+    return ops;
+  }
 }
 
 /* How to use */
@@ -202,9 +251,7 @@ let log = false;
 
 let branch = new Query(list) // Initiate a branch
   .map(([k, v]) => [k * 4, v])
-  .filter(
-    ([k, v]) => (log ? console.log(v) : undefined, v % 8 === 0 && k <= 2048),
-  );
+  .filter(([k, v]) => (log ? console.log(v) : undefined, v % 8 === 0 && k <= 2048));
 // .filter((v) => Math.random() >0.95)
 
 let forked = new branch(Operator) // Pass a Class named Operator to indicate a branch
