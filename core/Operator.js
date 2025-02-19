@@ -18,7 +18,6 @@ class Operator {
 
     // Branch the chain if input argument is a Builder class => instantiate or not?
     // Factory function prevents identity checking here...
-
     if (/*input === Operator*/ input?.name === Operator.name) {
       let prev = this;
 
@@ -41,6 +40,7 @@ class Operator {
     }
 
     // Return results if input argument is a native accumulator class
+    // To do: add register option for converting to custom classes (e.g. Tree, Graph, etc.)
     if (input === Array) {
       let result = Array.from(this);
       return result;
@@ -51,19 +51,24 @@ class Operator {
     }
   }
 
-  get context() {
-    return Object.getPrototypeOf(this).constructor.name;
+  // Utility function to walk from current node to constructor
+  walk(from) {
+    if (!this._walkCache) {
+      let chain = from ?? this;
+      let ops = [];
+      while (
+        chain !== null &&
+        Object.getPrototypeOf(chain) instanceof Operator
+      ) {
+        chain = Object.getPrototypeOf(chain);
+        ops.push(chain);
+      }
+      this._walkCache = ops.reverse();
+    }
+    return this._walkCache;
   }
 
-  get data() {
-    return this.#data;
-  }
-
-  set data(value) {
-    this.#data = value;
-  }
-
-  // Iterator strategy 3
+  // Custom iterator logic
   next() {
     const result = this[Symbol.iterator].next();
     if (result.done) {
@@ -76,22 +81,39 @@ class Operator {
     return this.data[Symbol.iterator]();
   }
 
+  // Getters and setters
+  get context() {
+    return Object.getPrototypeOf(this).constructor.name;
+  }
+
+  get data() {
+    return this.#data;
+  }
+
+  set data(value) {
+    this.#data = value;
+  }
+
   // Instance method: map
+  // Enables fluent chaining on class instance
   map(op) {
     return this.constructor.map.call(this.constructor, op);
   }
 
   // Instance method: filter
+  // Enables fluent chaining on class instance
   filter(op) {
     return this.constructor.filter.call(this.constructor, op);
   }
 
   // Instance method: sorter
+  // Enables fluent chaining on class instance
   sort(op) {
     return this.constructor.sort.call(this.constructor, op);
   }
 
-  // Static method do not take external options yet
+  // Static method: extend current with Mapper class
+  // Enables fluent chaining on dynamically returned subclasses
   static map(op) {
     return this.extendClass({
       name: "Mapper",
@@ -102,6 +124,8 @@ class Operator {
     });
   }
 
+  // Static method: extend current with Filter class
+  // Enables fluent chaining on dynamically returned subclasses
   static filter(op) {
     return this.extendClass({
       name: "Filter",
@@ -112,12 +136,14 @@ class Operator {
     });
   }
 
+  // Static method: extend current with Sorter class
+  // Enables fluent chaining on dynamically returned subclasses
   static sort(comparator = (a, b) => a - b) {
     return this.extendClass({
       name: "Sorter",
       comparator,
       cache: [],
-      cacheEnabled: true, // Cache is used to store the sorted portion
+      cacheEnabled: true,
       nextFunc: Operator.sorter
     });
   }
@@ -127,35 +153,31 @@ class Operator {
       options;
 
     // Determine the iterator logic upfront
-    let iteratorLogic;
+    let shape;
 
     if (transform && predicate) {
-      // Both transform and predicate are provided
-      iteratorLogic = (value) => {
+      shape = (value) => {
         const transformed = transform(value);
         return predicate(value) ? transformed : undefined;
       };
     } else if (transform) {
-      // Only transform is provided (map-like behavior)
-      iteratorLogic = transform;
+      shape = transform;
     } else if (predicate) {
-      // Only predicate is provided (filter-like behavior)
-      iteratorLogic = (value) => (predicate(value) ? value : undefined);
+      shape = (value) => (predicate(value) ? value : undefined);
     } else {
-      // Neither transform nor predicate is provided (identity behavior)
-      iteratorLogic = (value) => value;
+      shape = (value) => value;
     }
+
     return {
       next() {
-        // General filter/mapper logic
+        // Apply shaper to values
         while (true) {
           const { value, done } = iterator.next();
           if (done) {
             return { value: undefined, done: true };
           }
 
-          const result = iteratorLogic(value);
-
+          const result = shape(value);
           if (result !== undefined) {
             if (cacheEnabled) {
               cache.push(result);
@@ -168,8 +190,9 @@ class Operator {
   }
 
   static sorter(options) {
-    const { iterator, comparator, transform, predicate, cache, cacheEnabled } = options;
-    
+    const { iterator, comparator, transform, predicate, cache, cacheEnabled } =
+      options;
+
     // Track whether the input iterator is exhausted
     let doneSorting = false;
     let index = 0;
@@ -182,11 +205,11 @@ class Operator {
             const { value, done } = iterator.next();
             if (done) {
               doneSorting = true; // Mark sorting as complete
+              cache.sort(comparator);
               break;
             }
             cache.push(value);
           }
-          cache.sort(comparator);
         }
 
         // Yielding Phase: Return elements from the sorted cache
@@ -200,12 +223,12 @@ class Operator {
     };
   }
 
+  // Dynamic subclassing method
   static extendClass(options) {
     const { name, nextFunc, cache, cacheEnabled, ...rest } = options;
 
-    const prev = this; // => Current class in the chain
-    let layer = {
-
+    const prev = this; // => Previous class in the chain
+    const layer = {
       [name]: class extends prev {
         [Symbol.iterator]() {
           if (cacheEnabled && cache.length > 0) {
@@ -230,16 +253,9 @@ class Operator {
     return layer[name];
   }
 
-  // Walk the prototype chain
-  walk(from) {
-    let chain = from ?? this;
-    let ops = [];
-    while (chain !== null && Object.getPrototypeOf(chain) instanceof Operator) {
-      chain = Object.getPrototypeOf(chain);
-      ops.push(chain);
-    }
-    ops = ops.reverse();
-    return ops;
+  // Build new Operator Class reference
+  static factory() {
+    return new Function(`return ${this.toString()}`)();
   }
 
   // Convert operations to string
@@ -249,9 +265,5 @@ class Operator {
       .reduce((acc, operation) => {
         return `${operation}(${acc})`;
       }, "input")}`;
-  }
-
-  static factory() {
-    return new Function(`return ${this.toString()}`)();
   }
 }
