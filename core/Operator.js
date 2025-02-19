@@ -2,7 +2,7 @@ class Operator {
   #data;
 
   constructor(input) {
-    // Take previous input chain as input to new Builder
+    // Take previous input chain as input to new Builder (branching)
     if (input instanceof Operator) {
       this.data = input.constructor.data;
       // this.constructor.data = Array.from(this) // => freeze data: how to freeze on first go
@@ -37,7 +37,7 @@ class Operator {
             return allOps;
           }
         }
-      }[branch](squashed /*prev*/);
+      }[branch](instance /*squashed*/ /*prev*/); // Pass new instance as argument to indicate branching
     }
 
     // Return results if input argument is a native accumulator class
@@ -86,17 +86,19 @@ class Operator {
     return this.constructor.filter.call(this.constructor, op);
   }
 
-  // Instance method: sort
+  // Instance method: sorter
   sort(op) {
     return this.constructor.sort.call(this.constructor, op);
   }
 
-  // Does not take external options yet
+  // Static method do not take external options yet
   static map(op) {
     return this.extendClass({
       name: "Mapper",
       transform: op,
-      cacheEnabled: true
+      cache: [],
+      cacheEnabled: true,
+      nextFunc: Operator.shaper
     });
   }
 
@@ -104,7 +106,9 @@ class Operator {
     return this.extendClass({
       name: "Filter",
       predicate: op,
-      cacheEnabled: true
+      cache: [],
+      cacheEnabled: true,
+      nextFunc: Operator.shaper
     });
   }
 
@@ -112,12 +116,15 @@ class Operator {
     return this.extendClass({
       name: "Sorter",
       comparator,
-      cacheEnabled: true // Cache is used to store the sorted portion
+      cache: [],
+      cacheEnabled: true, // Cache is used to store the sorted portion
+      nextFunc: Operator.sorter
     });
   }
 
-  static extendClass(options) {
-    const { name, transform, comparator, predicate, cacheEnabled } = options;
+  static shaper(options) {
+    const { iterator, comparator, transform, predicate, cache, cacheEnabled } =
+      options;
 
     // Determine the iterator logic upfront
     let iteratorLogic;
@@ -138,16 +145,67 @@ class Operator {
       // Neither transform nor predicate is provided (identity behavior)
       iteratorLogic = (value) => value;
     }
+    return {
+      next() {
+        // General filter/mapper logic
+        while (true) {
+          const { value, done } = iterator.next();
+          if (done) {
+            return { value: undefined, done: true };
+          }
 
-    // Enclosed variables 
-    const prev = this; // => Current class in the chain
-    const cache = [];
+          const result = iteratorLogic(value);
 
+          if (result !== undefined) {
+            if (cacheEnabled) {
+              cache.push(result);
+            }
+            return { value: result, done: false };
+          }
+        }
+      }
+    };
+  }
+
+  static sorter(options) {
+    const { iterator, comparator, transform, predicate, cache, cacheEnabled } = options;
+    
     // Track whether the input iterator is exhausted
-    let doneSorting = false; 
+    let doneSorting = false;
     let index = 0;
 
     return {
+      next() {
+        // Process values on empty cache
+        if (!doneSorting) {
+          while (true) {
+            const { value, done } = iterator.next();
+            if (done) {
+              doneSorting = true; // Mark sorting as complete
+              break;
+            }
+            cache.push(value);
+          }
+          cache.sort(comparator);
+        }
+
+        // Yielding Phase: Return elements from the sorted cache
+        if (index < cache.length) {
+          return { value: cache[index++], done: false };
+        }
+
+        // If the cache is exhausted and sorting is complete, signal done
+        return { value: undefined, done: true };
+      }
+    };
+  }
+
+  static extendClass(options) {
+    const { name, nextFunc, cache, cacheEnabled, ...rest } = options;
+
+    const prev = this; // => Current class in the chain
+    let layer = {
+
       [name]: class extends prev {
         [Symbol.iterator]() {
           if (cacheEnabled && cache.length > 0) {
@@ -155,67 +213,21 @@ class Operator {
           }
 
           const iterator = super[Symbol.iterator]();
-
-          return {
-            next: () => {
-              // Sorter logic => insertion sort/normal sort
-              if (comparator) {
-                // Process values on empty cache once
-                if (!doneSorting) {
-                  while (true) {
-                    const { value, done } = iterator.next();
-                    if (done) {
-                      doneSorting = true; // Mark sorting as complete
-                      break;
-                    }
-
-                    // Insert the new element into the sorted cache
-                    /*let i = cache.length;
-                    while (i > 0 && comparator(cache[i - 1], value) > 0) {
-                      cache[i] = cache[i - 1];
-                      i--;
-                    }
-                    cache[i] = value;*/
-                    
-                    cache.push(value)
-                  }
-                  cache.sort(comparator)
-                }
-
-                // Yielding Phase: Return elements from the sorted cache
-                if (index < cache.length) {
-                  return { value: cache[index++], done: false };
-                }
-
-                // If the cache is exhausted and sorting is complete, signal done
-                return { value: undefined, done: true };
-              }
-
-              // General filter/mapper logic
-              while (true) {
-                const { value, done } = iterator.next();
-                if (done) {
-                  return { value: undefined, done: true };
-                }
-
-                const result = iteratorLogic(value);
-
-                if (result !== undefined) {
-                  if (cacheEnabled) {
-                    cache.push(result);
-                  }
-                  return { value: result, done: false };
-                }
-              }
-            }
-          };
+          return nextFunc({
+            iterator,
+            cache,
+            cacheEnabled,
+            ...rest
+          });
         }
 
         getCache() {
           return cache;
         }
       }
-    }[name];
+    };
+
+    return layer[name];
   }
 
   // Walk the prototype chain
