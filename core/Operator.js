@@ -1,42 +1,48 @@
+// 6085
+
 class Operator {
   #data;
+  #debug = true;
 
   constructor(input) {
+    if (input === undefined) throw new Error("No input provided");
+
     // Take previous input chain as input to new Builder (branching)
-    if (input instanceof Operator) {
-      this.data = input.constructor.data;
-      // this.constructor.data = Array.from(this) // => freeze data: how to freeze on first go
+    if (/*input instanceof Operator &&*/ this.constructor.name === "Branch") {
+      if (this.#debug) console.log("Post branch", input);
+      // this.data = this.constructor.data = Array.from(input.data) // => freeze data: how to freeze on first go
+      // this.data = this.constructor.data = input.getCache() // hoist data from branch
+      this.constructor.data = input.getCache(); // => input/input.getCache() leads to fastest copies
 
       // Forward iterator to dynamic subclass (E.g. Filter, Mapper)
     } else if (Object.getPrototypeOf(this) instanceof Operator) {
-      this.data = this.constructor.data;
-
-      // Initiate new Builder
+      this.#data = this.constructor.data;
+      // Initiate new Operator
     } else {
-      this.data = this.constructor.data = input; // Object.freeze(input); => don't mind freezing iterables
+      this.constructor.data = input; // Object.freeze(input); => don't mind freezing iterables
     }
 
     // Branch the chain if input argument is a Builder class => instantiate or not?
     // Factory function prevents identity checking here...
     if (/*input === Operator*/ input?.name === Operator.name) {
       let prev = this;
-
+      if (this.#debug) console.log("Pre branch", prev);
       let branch = prev.constructor.name;
-      let allOps = prev.getOps(this);
+      let signature = prev.getSignature(this);
 
-      let squashed = Array.from(prev); // => triggers cache
-      let instance = new Operator(squashed);
+      // let squashed = Array.from(prev); // => triggers cache
+      // let instance = new Operator(prev);
 
       return new {
-        [branch]: class Branch extends instance.constructor /*prev.constructor*/ {
+        [branch]: class Branch extends Operator {
           get branch() {
             return true;
           }
-          get layerOps() {
-            return allOps;
+          get signature() {
+            return signature;
           }
         }
-      }[branch](instance /*squashed*/ /*prev*/); // Pass new instance as argument to indicate branching
+      }[branch](prev /*squashed /*prev*/); // Pass new instance as argument to indicate branching
     }
 
     // Return results if input argument is a native accumulator class
@@ -45,7 +51,35 @@ class Operator {
       let result = Array.from(this);
       return result;
     } else if (input === Map) {
-      return new Map(this);
+      const result = new Map
+      let i = 0,
+        bufferSize = 3000;
+      const buffer = Array(bufferSize); // Temporary buffer to hold entries for batching
+
+      // Get the iterator for the input iterable
+      //const iterator = this[Symbol.iterator]();
+
+      // Use a regular for loop to iterate over the iterable
+      for (const item of this) {
+      //for (let next = iterator.next(); !next.done; next = iterator.next()) {
+        
+        buffer[i++] = item; // Add the current entry to the buffer
+
+        // If the buffer reaches the batch size, process the batch
+        if (i === bufferSize) {
+          for (let j = i - 1; j >= 0; j--) {
+            result.set(buffer[j][0], buffer[j][1]);
+          }
+          i = 0; // Reset the index
+        }
+      }
+
+      // Process any remaining entries in the buffer (partial batch)
+      for (let j = i - 1; j >= 0; j--) {
+        result.set(buffer[j][0], buffer[j][1]);
+      }
+
+      return result;
     } else if (input === Set) {
       return new Set(this);
     }
@@ -53,32 +87,22 @@ class Operator {
 
   // Utility function to walk from current node to constructor
   walk(from) {
-    if (!this._walkCache) {
-      let chain = from ?? this;
-      let ops = [];
-      while (
-        chain !== null &&
-        Object.getPrototypeOf(chain) instanceof Operator
-      ) {
-        chain = Object.getPrototypeOf(chain);
-        ops.push(chain);
-      }
-      this._walkCache = ops.reverse();
+    let chain = from ?? this;
+    let ops = [];
+    while (chain !== null && Object.getPrototypeOf(chain) instanceof Operator) {
+      chain = Object.getPrototypeOf(chain);
+      ops.push(chain);
     }
-    return this._walkCache;
+    return ops.reverse();
   }
 
   // Custom iterator logic
-  next() {
-    const result = this[Symbol.iterator].next();
-    if (result.done) {
-      return { value: undefined, done: true };
-    }
-    return result;
+  [Symbol.iterator]() {
+    return this.#data[Symbol.iterator]();
   }
 
-  [Symbol.iterator]() {
-    return this.data[Symbol.iterator]();
+  next() {
+    return this[Symbol.iterator]().next();
   }
 
   // Getters and setters
@@ -91,6 +115,7 @@ class Operator {
   }
 
   set data(value) {
+    // console.log("========= data set at ",this.constructor.name,value)
     this.#data = value;
   }
 
@@ -118,9 +143,9 @@ class Operator {
     return this.extendClass({
       name: "Mapper",
       transform: op,
-      cache: [],
+      cache: Array,
       cacheEnabled: true,
-      nextFunc: Operator.shaper
+      iterType: Operator.shaper
     });
   }
 
@@ -130,9 +155,9 @@ class Operator {
     return this.extendClass({
       name: "Filter",
       predicate: op,
-      cache: [],
+      cache: Array,
       cacheEnabled: true,
-      nextFunc: Operator.shaper
+      iterType: Operator.shaper
     });
   }
 
@@ -142,19 +167,26 @@ class Operator {
     return this.extendClass({
       name: "Sorter",
       comparator,
-      cache: [],
+      cache: Array,
       cacheEnabled: true,
-      nextFunc: Operator.sorter
+      iterType: Operator.sorter
     });
   }
 
   static shaper(options) {
-    const { iterator, comparator, transform, predicate, cache, cacheEnabled } =
-      options;
+    const {
+      ctx,
+      iterator,
+      comparator,
+      transform,
+      predicate,
+      cache,
+      cacheEnabled,
+      forwardCache
+    } = options;
 
     // Determine the iterator logic upfront
     let shape;
-
     if (transform && predicate) {
       shape = (value) => {
         const transformed = transform(value);
@@ -174,6 +206,7 @@ class Operator {
         while (true) {
           const { value, done } = iterator.next();
           if (done) {
+            // console.log("cached", Operator.shaper.name);
             return { value: undefined, done: true };
           }
 
@@ -225,18 +258,50 @@ class Operator {
 
   // Dynamic subclassing method
   static extendClass(options) {
-    const { name, nextFunc, cache, cacheEnabled, ...rest } = options;
+    const {
+      name,
+      iterType: nextFunc,
+      cache: Cache,
+      cacheEnabled,
+      ...rest
+    } = options;
+
+    /*class LayerCache extends Cache {
+      [Symbol.iterator]() {
+        const iterator = super[Symbol.iterator]();
+        return nextFunc({
+          iterator,
+          cacheEnabled:false,
+        });
+      }
+    }*/
 
     const prev = this; // => Previous class in the chain
+    const cache =
+      new Cache(); /*prev.iterType === nextFunc ? prev.layerCache : new LayerCache;
+  
+    console.log(prev.iterType?.name ?? prev.name, nextFunc.name,prev.iterType === nextFunc ? prev.layerCache : null)*/
+
     const layer = {
       [name]: class extends prev {
+        static iterType = nextFunc;
+        static layerCache = cache;
         [Symbol.iterator]() {
-          if (cacheEnabled && cache.length > 0) {
+          if (cacheEnabled && (cache.length > 0 || cache.size > 0)) {
+            if (this.#debug)
+              console.log(
+                "cache hit at",
+                this.constructor.name,
+                "first val",
+                cache[0]
+              );
             return cache[Symbol.iterator]();
           }
+          if (this.#debug) console.log("Iterating at", name);
 
           const iterator = super[Symbol.iterator]();
           return nextFunc({
+            ctx: this,
             iterator,
             cache,
             cacheEnabled,
@@ -245,8 +310,12 @@ class Operator {
         }
 
         getCache() {
-          return cache;
+          return this.constructor.layerCache;
         }
+
+        /*get size() {
+          return this.constructor.layerCache.length
+        }*/
       }
     };
 
@@ -259,7 +328,7 @@ class Operator {
   }
 
   // Convert operations to string
-  getOps(from) {
+  getSignature(from) {
     return `Inherited:${this.walk(from ?? this)
       .map((d) => d.constructor.name)
       .reduce((acc, operation) => {
