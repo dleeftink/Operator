@@ -58,7 +58,7 @@
       // Check if new Layer
       let newLayer = prev.name !== name;
       let cache = newLayer ? new Cache() : prev.cache; // seems fastest without caching...
-       cache = undefined
+      // cache = undefined
       // Accumulate transformations and predicates
       let transforms = prev.transforms ? [...prev.transforms] : [];
       let predicates = newLayer ? [] : [...prev.predicates]; // Reset predicates for new layers
