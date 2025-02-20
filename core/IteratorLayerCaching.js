@@ -8,10 +8,14 @@
 
     #debug = false;
     constructor(input) {
-      if (input === Array) {
+
+      if(input === Base) {
+        // Aim is to create a new branch that benefits from cached results
+        return new (class Branch extends Base {})(this)
+      } else if (input === Array) {
         return Array.from(this);
       } else if (input === Set) {
-        if(this.constructor.Set) return new Set(this.constructor.Set) // cache not even used this way
+        if(this.constructor.Set) return new Set(this.constructor.Set) // cache is not even used this way
         const result = new input();
         if (this.#debug) console.log("Building set");
 
@@ -36,22 +40,19 @@
           result.add(buffer[j]);
         }
         return this.constructor.Set = result; //  return new Set(this); // accumulate results
-      } else if (input) this.data = input;
+        
+      // Is this the safest way to check for instancing ...
+      } else if(input instanceof Base) {
+        this.constructor.data = input // => Hides branch from view
+      } else if (input) { 
+        this.data = input;
+      }
     }
 
     // Base class iterator logic
     [Symbol.iterator]() {
       let source = (this.data ?? this.constructor.data)[Symbol.iterator]();
       return source
-      //yield* source
-      // Return an iterator object with a `next` method
-      /*let iterator = source[Symbol.iterator]();
-      return {
-        next: () => {
-          const result = iterator.next();
-          return result; // Pass through the value and done flag
-        },
-      };*/
     }
 
     extend(def) {
@@ -65,7 +66,8 @@
       let data = this.data ?? this.constructor.data;
       let root = Object.getPrototypeOf(prev).prototype ? prev.root : this;
       let cache =  name === prev.name ? undefined : new Cache; // Don't create new cache on duplicate layers
-      // cache = undefined // => fastest without caching
+      cache = undefined
+      // if(name === "Filter") cache = undefined
       // Name is automatically stored with class
       let Layer = {
         [name]: class extends prev {
@@ -85,13 +87,12 @@
 
             // Else return cache in case of branching
             if (cache?.length > 0 || cache?.size > 0) {
-              // console.log("Cache hit at", cache);
+              console.log("Cache hit at");
               return cache[Symbol.iterator]();
             }
 
             // Run main iterator
             const iterator = super[Symbol.iterator]();
-        
             return evaluate({ iterator, transform, predicate, cache });
           }
         },
@@ -208,6 +209,23 @@
   let out = new main(Set)
   let out2 = new main(Set)
 
+  let fork = new main(Base)    
+    .extend({
+      name: "Mapper",
+      cache: Array,
+      transform: (d) => d * 16,
+      evaluate: mapper,
+    }) 
+    .extend({
+      name: "Filter",
+      cache: Set, // Use Set as the cache to track seen values
+      predicate: (v) => v < 1000,
+      evaluate: filter,
+    })
+
+  let out3 = new fork(Set)
+
+
   let t2 = performance.now()
   let arr = new Set(Array.from(setSeqA).filter(d=>d<testMax).map(d=> d * 2).map(d=> d * 2).map(d=> d * 2)
         .filter(d=>d>0) .filter(d=>d<80000000))
@@ -216,14 +234,20 @@
         .filter(d=>d>0) .filter(d=>d<80000000))
   let t3 = performance.now()
 
-  let out = {
+
+  let output = {
     lazy: ~~(t2 - t1),    native: ~~(t3 - t2),
-    main: new main(),
+    main: new main(Base),
     out,
-    out2,arr,arr2
+    out2,
+    out3,
+    arr,arr2,
+    temp:new fork(Base)
+    
   };
 
-  console.log(out)
+
+  console.log(output)
 
   function shuffleArray(array) {
     for (let i = array.length - 1; i >= 0; i--) {
