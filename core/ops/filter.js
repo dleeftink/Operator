@@ -14,8 +14,8 @@ function filter(config) {
           
           if (debug) cacheLogger(name, init, predicate, cache);
           if (cache.primed && enabled) {
-            cache.primed = false;
             iterator = cache[Symbol.iterator]();
+            cache.primed = false;
           }
           if (enabled) cache.primed = true;
           return { value: undefined, done: true };
@@ -24,7 +24,7 @@ function filter(config) {
         
         if (init && cache.has(value)) continue;
         if (predicate(value,row,nth++)) {
-          /*if(enabled)*/ cache.add(value); // => Filter cache always on or not?
+          /*if(enabled)*/ cache.add(value); // => Filter cache always on or not? => add dedupe option
           return { value, done };
         } else if(enabled) {
           cache.delete(value) // Evict non-matches
